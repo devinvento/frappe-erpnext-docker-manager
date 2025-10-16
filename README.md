@@ -22,16 +22,20 @@ A comprehensive collection of Docker tools for deploying Frappe/ERPNext, support
 
 ### 🌐 **VPS/Cloud Server Tools** (Production)
 - **`generate_frappe_docker.sh`** - Production deployment with SSL/HTTPS
-- **`docker-manager.sh`** - Production container management (11 menu options)
+- **`docker-manager.sh`** - Production container management (13 menu options)
 - **`fix_traefik_https.sh`** - Comprehensive HTTPS upgrade
 - **`manual_fix_traefik.sh`** - Quick HTTPS fix
 - **`test_mixed_setup.sh`** - Mixed HTTP/HTTPS testing
 
 ### 🏠 **Local Development Tools** (Docker-Local Folder)
-- **`Docker-Local/generate_frappe_docker_local.sh`** - Local development setup
-- **`Docker-Local/docker-manager-local.sh`** - Local container management (11 menu options)
+- **`Docker-Local/generate_frappe_docker_local.sh`** - Local development setup with enhanced features
 - **`Docker-Local/setup-traefik-local.sh`** - Local Traefik configuration (Linux)
 - **`Docker-Local/setup-traefik-local-mac.sh`** - Local Traefik configuration (Mac optimized)
+
+### 🔧 **Maintenance & Fix Tools**
+- **`docker-manager.sh`** - Universal container management (13 menu options) - works for both local and VPS
+- **`fix-traefik-network.sh`** - Fix broken traefik_proxy network issues
+- **`fix-db-permissions.sh`** - Fix database permissions for app installation
 
 ### 📚 **Documentation & Templates**
 - **`Docker-Local/README.md`** - Complete local development guide
@@ -66,6 +70,7 @@ chmod +x generate_frappe_docker.sh
 - ✅ **SSL/HTTPS**: Automatic Let's Encrypt certificates
 - ✅ **Traefik Integration**: Reverse proxy with SSL termination
 - ✅ **Production Ready**: Internet accessible with domain validation
+- ✅ **Enhanced Features**: ERPNext version selection, database permissions auto-fix, automatic restart policies
 
 ### 🏠 **Local Development Setup** (Development)
 ```bash
@@ -81,7 +86,7 @@ chmod +x generate_frappe_docker.sh
 # 4. Wait for automatic setup (5 minutes)
 
 # 5. Manage local containers
-./Docker-Local/docker-manager-local.sh
+./docker-manager.sh
 
 # Option 2: With sudo (if you prefer)
 # 1. Setup local Traefik (Mac optimized, with sudo)
@@ -94,7 +99,7 @@ sudo ./Docker-Local/generate_frappe_docker_local.sh
 # 4. Wait for automatic setup (5 minutes)
 
 # 5. Manage local containers
-sudo ./Docker-Local/docker-manager-local.sh
+sudo ./docker-manager.sh
 
 # 🐧 Linux Users
 # 1. Setup local Traefik
@@ -107,7 +112,7 @@ sudo ./Docker-Local/generate_frappe_docker_local.sh
 # 4. Wait for automatic setup (5 minutes)
 
 # 5. Manage local containers
-sudo ./Docker-Local/docker-manager-local.sh
+sudo ./docker-manager.sh
 ```
 
 **What You Get**:
@@ -116,6 +121,7 @@ sudo ./Docker-Local/docker-manager-local.sh
 - ✅ **Localhost Domains**: .localhost support with hosts file management
 - ✅ **Fast Startup**: Lower resource usage, faster iteration
 - ✅ **Mac Optimized**: Native .localhost support, port 8081 default, Docker Desktop optimized
+- ✅ **Enhanced Features**: ERPNext version selection, database permissions auto-fix, VS Code development support
 
 ---
 
@@ -205,9 +211,9 @@ Local Traefik Integration:
 
 ## 🛠️ Container Management
 
-### 🌐 **VPS Container Management**
+### 🌐 **Universal Container Management**
 ```bash
-# Access the VPS Docker Manager
+# Access the Universal Docker Manager (works for both VPS and Local)
 ./docker-manager.sh
 
 # Available Menu Options:
@@ -221,31 +227,12 @@ Local Traefik Integration:
 8. Access specific container as root
 9. File Transfer
 10. Install Packages
-11. Exit
+11. View Create-Site logs
+12. Fix Restart Policies
+13. Exit
 ```
 
-📚 **[VPS Manager Documentation](Docker-on-VPS/DOCKER_MANAGER.md)**
-
-### 🏠 **Local Container Management**
-```bash
-# Access the Local Docker Manager
-sudo ./Docker-Local/docker-manager-local.sh
-
-# Available Menu Options:
-1. Show running containers
-2. Access container shell (normal user)
-3. Access container shell (root user)
-4. Manage Frappe processes
-5. View logs
-6. Manage containers
-7. Show site information
-8. Access specific container as root
-9. File Transfer
-10. Install Packages
-11. Exit
-```
-
-📚 **[Local Manager Documentation](Docker-Local/README.md)**
+📚 **[Manager Documentation](Docker-on-VPS/DOCKER_MANAGER.md)**
 
 ---
 
@@ -307,7 +294,16 @@ docker ps -a
 docker restart SITE_NAME-app
 ```
 
-#### 2. **Process Management Issues**
+#### 2. **Network Issues (ERR_NETWORK_CHANGED)**
+```bash
+# Fix broken traefik_proxy network
+./fix-traefik-network.sh
+
+# This will temporarily disconnect all sites (~30 seconds)
+# and recreate the network properly
+```
+
+#### 3. **Process Management Issues**
 ```bash
 # Access container and check Supervisor
 docker exec -it SITE_NAME-app bash
@@ -319,7 +315,7 @@ docker exec -it SITE_NAME-app bash
 /home/frappe/.local/bin/supervisorctl -c /home/frappe/supervisor/supervisord.conf restart all
 ```
 
-#### 3. **Port Conflicts (Local)**
+#### 4. **Port Conflicts (Local)**
 ```bash
 # Check what's using ports
 sudo ss -ltn "sport = :80"
@@ -329,7 +325,15 @@ sudo ss -ltn "sport = :443"
 sudo ./Docker-Local/setup-traefik-local.sh
 ```
 
-#### 4. **SSL Issues (VPS)**
+#### 5. **Database Permission Issues**
+```bash
+# Fix database permissions for app installation
+./fix-db-permissions.sh SITE_NAME-app
+
+# This fixes "Access denied" errors when installing custom apps
+```
+
+#### 6. **SSL Issues (VPS)**
 ```bash
 # Check Traefik logs
 docker logs traefik
@@ -530,17 +534,17 @@ chmod +x generate_frappe_docker.sh
 # No sudo required (RECOMMENDED):
 ./Docker-Local/setup-traefik-local-mac-no-sudo.sh
 ./Docker-Local/generate_frappe_docker_local.sh
-./Docker-Local/docker-manager-local.sh
+./docker-manager.sh
 
 # With sudo (if you prefer):
 sudo ./Docker-Local/setup-traefik-local-mac.sh
 sudo ./Docker-Local/generate_frappe_docker_local.sh
-sudo ./Docker-Local/docker-manager-local.sh
+sudo ./docker-manager.sh
 
 # 🐧 Linux users:
 sudo ./Docker-Local/setup-traefik-local.sh
 sudo ./Docker-Local/generate_frappe_docker_local.sh
-sudo ./Docker-Local/docker-manager-local.sh
+sudo ./docker-manager.sh
 ```
 
 ### **Process Management**
@@ -557,6 +561,8 @@ docker exec SITE_NAME-app /home/frappe/.local/bin/supervisorctl -c /home/frappe/
 **💡 Pro Tip**: Bookmark the appropriate README for your environment - [Local Development](Docker-Local/README.md) or [VPS/Cloud Server](Docker-on-VPS/README.md)! 
 
 **🍎 Mac Users**: Use `setup-traefik-local-mac-no-sudo.sh` for the best experience with no sudo required and native .localhost support!
+
+**🔧 New Features**: Enhanced ERPNext version selection, automatic database permissions fixes, universal docker-manager.sh, and network troubleshooting tools!
 
 **🎯 Ready to Deploy?** Choose your environment and follow the complete guide! 🚀
 

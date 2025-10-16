@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Docker Manager Local - For Frappe/ERPNext Local Optimized Setup
-# This script manages containers created by generate_frappe_docker_local_optimized.sh
+# Docker Manager - For Frappe/ERPNext Minimal Setup
+# This script manages containers created by generate_frappe_docker.sh
 
 # Color definitions
 GREEN='\033[0;32m'
@@ -15,11 +15,27 @@ NC='\033[0m' # No Color
 # Script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Detect preferred docker compose command
+detect_docker_compose() {
+    # Try docker compose (v2) first - preferred method
+    if docker compose version >/dev/null 2>&1; then
+        echo "docker compose"
+        return 0
+    # Fallback to docker-compose (v1) if v2 is not available
+    elif command -v docker-compose >/dev/null 2>&1; then
+        echo "docker-compose"
+        return 0
+    else
+        echo -e "${RED}Error: Neither 'docker compose' nor 'docker-compose' is available${NC}" >&2
+        return 1
+    fi
+}
+
 # Function to print header
 print_header() {
     echo -e "${BLUE}╔══════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${BLUE}║                Docker Manager Local v1.0                    ║${NC}"
-    echo -e "${BLUE}║         Frappe/ERPNext Local Optimized Setup                ║${NC}"
+    echo -e "${BLUE}║                Docker Manager v1.0                          ║${NC}"
+    echo -e "${BLUE}║         Frappe/ERPNext Minimal Setup                        ║${NC}"
     echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${NC}"
     echo ""
 }
@@ -33,7 +49,7 @@ check_docker() {
     fi
 }
 
-# Function to find Frappe sites by running containers (like docker-manager.sh)
+# Function to find Frappe sites by running containers
 find_frappe_sites() {
     local sites=()
     # Use docker ps to find containers and extract project names
@@ -170,6 +186,10 @@ view_logs() {
             echo -e "${CYAN}📋 Viewing container logs for $site_name...${NC}"
             docker logs -f "$site_name-app"
             ;;
+        "create-site")
+            echo -e "${CYAN}📋 Viewing Create-Site logs for $site_name...${NC}"
+            docker logs -f "$site_name-create-site"
+            ;;
         *)
             echo -e "${RED}❌ Invalid log type${NC}"
             return 1
@@ -199,13 +219,27 @@ manage_containers() {
             echo -e "${CYAN}🔨 Rebuilding containers for $site_name...${NC}"
             # Find docker-compose file if it exists
             if [[ -f "${site_name}-docker-compose.yml" ]]; then
-                docker compose -f "${site_name}-docker-compose.yml" down
-                docker compose -f "${site_name}-docker-compose.yml" up -d --build
+                DOCKER_COMPOSE_CMD=$(detect_docker_compose)
+                if [ $? -ne 0 ]; then
+                    echo -e "${RED}❌ Failed to detect docker compose command${NC}"
+                    return 1
+                fi
+                $DOCKER_COMPOSE_CMD -f "${site_name}-docker-compose.yml" down
+                
+                # Update docker-compose file to add restart policy
+                echo -e "${BLUE}📝 Adding auto-restart policy to containers...${NC}"
+                sed -i 's/\(^\s*\)\(container_name:\)/\1restart: always\n\1\2/g' "${site_name}-docker-compose.yml"
+                
+                $DOCKER_COMPOSE_CMD -f "${site_name}-docker-compose.yml" up -d --build
             else
                 echo -e "${YELLOW}⚠️  No docker-compose file found for $site_name${NC}"
                 echo "Containers will be restarted instead."
                 docker restart $(docker ps --filter "name=^${site_name}-" --format "{{.Names}}")
             fi
+            ;;
+        "rebuild-with-apps")
+            echo -e "${CYAN}🔨 Rebuilding containers with custom apps preservation for $site_name...${NC}"
+            rebuild_with_custom_apps "$site_name"
             ;;
         "logs")
             echo -e "${CYAN}📋 Showing logs for $site_name...${NC}"
@@ -235,6 +269,50 @@ remove_all_containers() {
     docker ps -a --filter "name=^${site_name}-" --format "table {{.Names}}\t{{.Status}}"
     echo ""
     
+    # Show volumes that will be removed
+    echo -e "${CYAN}Docker volumes that will be removed:${NC}"
+    local volumes=$(docker volume ls --filter "name=${site_name}" --format "{{.Name}}")
+    if [ ! -z "$volumes" ]; then
+        echo "$volumes" | while read volume; do
+            echo -e "   📦 $volume"
+        done
+    else
+        echo -e "   ${YELLOW}No volumes found${NC}"
+    fi
+    echo ""
+    
+    # Show networks that will be removed
+    echo -e "${CYAN}Docker networks that will be removed:${NC}"
+    local networks=$(docker network ls --filter "name=${site_name}" --format "{{.Name}}")
+    if [ ! -z "$networks" ]; then
+        echo "$networks" | while read network; do
+            echo -e "   🌐 $network"
+        done
+    else
+        echo -e "   ${YELLOW}No networks found${NC}"
+    fi
+    echo ""
+    
+    # Show folders that will be removed
+    echo -e "${CYAN}Folders that will be removed:${NC}"
+    local site_folder="${site_name}"
+    local vscode_folder=""
+    
+    # Determine VS Code folder path
+    ACTUAL_USER_HOME=$(eval echo ~$SUDO_USER)
+    if [ -z "$ACTUAL_USER_HOME" ] || [ "$ACTUAL_USER_HOME" = "~$SUDO_USER" ]; then
+        ACTUAL_USER_HOME="$HOME"
+    fi
+    vscode_folder="${ACTUAL_USER_HOME}/frappe-docker/${site_name}-frappe-bench"
+    
+    if [[ -d "$site_folder" ]]; then
+        echo -e "   📁 Site folder: ${site_folder}"
+    fi
+    if [[ -d "$vscode_folder" ]]; then
+        echo -e "   💻 VS Code folder: ${vscode_folder}"
+    fi
+    echo ""
+    
     read -p "⚠️  Are you absolutely sure you want to remove ALL containers? (y/n): " confirm1
     if [[ ! "$confirm1" =~ ^[Yy]$ ]]; then
         echo -e "${YELLOW}Operation cancelled.${NC}"
@@ -255,126 +333,65 @@ remove_all_containers() {
     
     echo -e "${GREEN}✅ All containers removed successfully!${NC}"
     
-    # Offer cleanup
-    read -p "🧹 Do you want to clean up unused Docker resources? (y/n): " cleanup_choice
-    if [[ "$cleanup_choice" =~ ^[Yy]$ ]]; then
-        cleanup_docker_space
-    fi
-}
-
-# Function to remove specific container
-remove_specific_container() {
-    local site_name=$1
-    
-    echo -e "${CYAN}📋 Available containers for $site_name:${NC}"
-    docker ps -a --filter "name=^${site_name}-" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-    echo ""
-    
-    read -p "Enter container name to remove: " container_name
-    if [[ -z "$container_name" ]]; then
-        echo -e "${YELLOW}No container name provided.${NC}"
-        return 1
-    fi
-    
-    # Check if container exists
-    if ! docker ps -a --format "{{.Names}}" | grep -q "^${container_name}$"; then
-        echo -e "${RED}❌ Container $container_name not found.${NC}"
-        return 1
-    fi
-    
-    echo -e "${RED}⚠️  WARNING: This will permanently remove container: $container_name${NC}"
-    read -p "⚠️  Are you sure you want to remove $container_name? (y/n): " confirm1
-    if [[ ! "$confirm1" =~ ^[Yy]$ ]]; then
-        echo -e "${YELLOW}Removal cancelled.${NC}"
-        return 0
-    fi
-    
-    read -p "⚠️  FINAL CONFIRMATION: Type 'REMOVE' to confirm: " confirm2
-    if [[ "$confirm2" != "REMOVE" ]]; then
-        echo -e "${YELLOW}Removal cancelled - incorrect confirmation.${NC}"
-        return 0
-    fi
-    
-    echo -e "${RED}🗑️  Removing container $container_name...${NC}"
-    
-    if docker rm -f "$container_name"; then
-        echo -e "${GREEN}✅ Container $container_name removed successfully!${NC}"
+    # Remove associated volumes
+    echo -e "${BLUE}🗑️  Removing Docker volumes for $site_name...${NC}"
+    local volumes=$(docker volume ls --filter "name=${site_name}" --format "{{.Name}}")
+    if [ ! -z "$volumes" ]; then
+        echo "$volumes" | while read volume; do
+            echo -e "   Removing volume: $volume"
+            docker volume rm "$volume" 2>/dev/null || echo -e "   ${YELLOW}⚠️  Warning: Could not remove volume $volume (may be in use)${NC}"
+        done
+        echo -e "${GREEN}✅ Docker volumes removed successfully!${NC}"
     else
-        echo -e "${RED}❌ Failed to remove container $container_name.${NC}"
-        return 1
+        echo -e "${YELLOW}No volumes found for $site_name${NC}"
     fi
-}
-
-# Function to cleanup Docker space
-cleanup_docker_space() {
-    echo -e "${CYAN}🧹 Docker System Cleanup${NC}"
-    echo ""
     
-    # Show current space usage
-    echo -e "${YELLOW}📊 Current Docker Space Usage:${NC}"
-    docker system df
-    echo ""
-    
-    echo "What would you like to clean up?"
-    echo "1. Clean unused containers, networks, and dangling images (safe)"
-    echo "2. Clean everything unused including volumes (removes data!)"
-    echo "3. Clean only dangling images"
-    echo "4. Clean only stopped containers"
-    echo "5. Clean only unused volumes (removes data!)"
-    echo "6. Clean only unused networks"
-    echo "7. Cancel"
-    
-    read -p "Select cleanup option (1-7): " cleanup_option
-    
-    case $cleanup_option in
-        1)
-            echo -e "${GREEN}🧹 Cleaning containers, networks, and dangling images...${NC}"
-            docker system prune -f
-            ;;
-        2)
-            echo -e "${RED}⚠️  WARNING: This will remove ALL unused volumes and may delete important data!${NC}"
-            read -p "⚠️  Are you sure you want to remove volumes? (y/n): " confirm_volumes
-            if [[ "$confirm_volumes" == "y" ]]; then
-                echo -e "${GREEN}🧹 Cleaning everything including volumes...${NC}"
-                docker system prune -a --volumes -f
-            else
-                echo -e "${YELLOW}Volume cleanup cancelled.${NC}"
+    # Remove associated networks
+    echo -e "${BLUE}🗑️  Removing Docker networks for $site_name...${NC}"
+    local networks=$(docker network ls --filter "name=${site_name}" --format "{{.Name}}")
+    if [ ! -z "$networks" ]; then
+        echo "$networks" | while read network; do
+            # Skip default networks
+            if [[ "$network" != "bridge" && "$network" != "host" && "$network" != "none" ]]; then
+                echo -e "   Removing network: $network"
+                docker network rm "$network" 2>/dev/null || echo -e "   ${YELLOW}⚠️  Warning: Could not remove network $network (may be in use)${NC}"
             fi
-            ;;
-        3)
-            echo -e "${GREEN}🖼️  Cleaning dangling images...${NC}"
-            docker image prune -f
-            ;;
-        4)
-            echo -e "${GREEN}📦 Cleaning stopped containers...${NC}"
-            docker container prune -f
-            ;;
-        5)
-            echo -e "${RED}⚠️  WARNING: This will remove unused volumes and may delete data!${NC}"
-            read -p "⚠️  Are you sure you want to remove unused volumes? (y/n): " confirm_vol
-            if [[ "$confirm_vol" == "y" ]]; then
-                echo -e "${GREEN}💾 Cleaning unused volumes...${NC}"
-                docker volume prune -f
-            else
-                echo -e "${YELLOW}Volume cleanup cancelled.${NC}"
-            fi
-            ;;
-        6)
-            echo -e "${GREEN}🌐 Cleaning unused networks...${NC}"
-            docker network prune -f
-            ;;
-        7)
-            echo -e "${YELLOW}Cleanup cancelled.${NC}"
-            return
-            ;;
-        *)
-            echo -e "${RED}❌ Invalid option.${NC}"
-            return
-            ;;
-    esac
+        done
+        echo -e "${GREEN}✅ Docker networks removed successfully!${NC}"
+    else
+        echo -e "${YELLOW}No networks found for $site_name${NC}"
+    fi
     
+    # Remove site folder
+    if [[ -d "$site_folder" ]]; then
+        echo -e "${BLUE}🗑️  Removing site folder: $site_folder${NC}"
+        rm -rf "$site_folder"
+        echo -e "${GREEN}✅ Site folder removed successfully!${NC}"
+    fi
+    
+    # Remove VS Code development folder
+    if [[ -d "$vscode_folder" ]]; then
+        echo -e "${BLUE}🗑️  Removing VS Code folder: $vscode_folder${NC}"
+        rm -rf "$vscode_folder"
+        echo -e "${GREEN}✅ VS Code folder removed successfully!${NC}"
+    fi
+    
+    # Remove from hosts file if it exists
+    local site_domain="${site_name//_/.}"
+    if grep -q "$site_domain" /etc/hosts 2>/dev/null; then
+        echo -e "${BLUE}🗑️  Removing $site_domain from hosts file${NC}"
+        sudo sed -i "/$site_domain/d" /etc/hosts
+        echo -e "${GREEN}✅ Hosts file entry removed successfully!${NC}"
+    fi
+    
+    echo -e "${GREEN}🎉 Complete cleanup completed for $site_name!${NC}"
+    
+    # Automatic cleanup - always yes, always aggressive
     echo ""
-    echo -e "${GREEN}✅ Cleanup completed!${NC}"
+    echo -e "${BLUE}🧹 Cleaning up unused Docker resources (volumes, images, containers)...${NC}"
+    docker system prune -a --volumes -f
+    echo -e "${GREEN}✅ Docker cleanup completed!${NC}"
+    echo ""
     echo -e "${GREEN}📊 Updated Docker Space Usage:${NC}"
     docker system df
 }
@@ -530,7 +547,9 @@ show_main_menu() {
     echo -e "${GREEN}8.${NC} Access specific container as root"
     echo -e "${GREEN}9.${NC} File Transfer"
     echo -e "${GREEN}10.${NC} Install Packages"
-    echo -e "${GREEN}11.${NC} Exit"
+    echo -e "${GREEN}11.${NC} View Create-Site logs"
+    echo -e "${GREEN}12.${NC} Fix Restart Policies"
+    echo -e "${GREEN}13.${NC} Exit"
     echo ""
 }
 
@@ -557,7 +576,8 @@ show_log_menu() {
     echo -e "${GREEN}4.${NC} Frappe WebSocket logs"
     echo -e "${GREEN}5.${NC} Supervisor logs"
     echo -e "${GREEN}6.${NC} Container logs"
-    echo -e "${GREEN}7.${NC} Back to main menu"
+    echo -e "${GREEN}7.${NC} Create-Site logs"
+    echo -e "${GREEN}8.${NC} Back to main menu"
     echo ""
 }
 
@@ -569,12 +589,11 @@ show_container_menu() {
     echo -e "${GREEN}2.${NC} Stop containers"
     echo -e "${GREEN}3.${NC} Restart containers"
     echo -e "${GREEN}4.${NC} Rebuild containers"
-    echo -e "${GREEN}5.${NC} Show container logs"
-    echo -e "${GREEN}6.${NC} Show container status"
-    echo -e "${GREEN}7.${NC} Remove all containers (with space cleanup)"
-    echo -e "${GREEN}8.${NC} Remove specific container"
-    echo -e "${GREEN}9.${NC} Docker system cleanup (free space)"
-    echo -e "${GREEN}10.${NC} Back to main menu"
+    echo -e "${GREEN}5.${NC} Rebuild with custom apps preservation"
+    echo -e "${GREEN}6.${NC} Show container logs"
+    echo -e "${GREEN}7.${NC} Show container status"
+    echo -e "${GREEN}8.${NC} Complete site removal (containers + folders + hosts)"
+    echo -e "${GREEN}9.${NC} Back to main menu"
     echo ""
 }
 
@@ -608,6 +627,9 @@ show_site_info() {
     done
 }
 
+# Global variable to store the selected site name
+SELECTED_SITE=""
+
 # Main function
 main() {
     print_header
@@ -620,7 +642,7 @@ main() {
     if [[ ${#sites[@]} -eq 0 ]]; then
         echo -e "${YELLOW}⚠️  No Frappe sites found in running containers${NC}"
         echo "Please start your Frappe containers first."
-        echo "Or run generate_frappe_docker_local_optimized.sh to create a site."
+        echo "Or run generate_frappe_docker.sh to create a site."
         exit 1
     fi
     
@@ -630,123 +652,88 @@ main() {
     done
     echo ""
     
+    # Select site once at the beginning if multiple sites are available
+    if [[ ${#sites[@]} -gt 1 ]]; then
+        echo -e "${CYAN}Select a site to work with:${NC}"
+        select SELECTED_SITE in "${sites[@]}"; do
+            if [[ -n "$SELECTED_SITE" ]]; then
+                echo -e "${GREEN}✅ Selected site: $SELECTED_SITE${NC}"
+                break
+            fi
+        done
+        echo ""
+    else
+        SELECTED_SITE="${sites[0]}"
+        echo -e "${GREEN}✅ Working with site: $SELECTED_SITE${NC}"
+        echo ""
+    fi
+    
     while true; do
         show_main_menu
         
-        read -p "Select an option (1-11): " choice
+        read -p "Select an option (1-13): " choice
         
         case $choice in
             1)
                 show_running_containers
                 ;;
             2)
-                if [[ ${#sites[@]} -eq 1 ]]; then
-                    access_container "${sites[0]}" "normal"
-                else
-                    echo -e "${CYAN}Select a site:${NC}"
-                    select site in "${sites[@]}"; do
-                        if [[ -n "$site" ]]; then
-                            access_container "$site" "normal"
-                            break
-                        fi
-                    done
-                fi
+                access_container "$SELECTED_SITE" "normal"
                 ;;
             3)
-                if [[ ${#sites[@]} -eq 1 ]]; then
-                    access_container "${sites[0]}" "root"
-                else
-                    echo -e "${CYAN}Select a site:${NC}"
-                    select site in "${sites[@]}"; do
-                        if [[ -n "$site" ]]; then
-                            access_container "$site" "root"
-                            break
-                        fi
-                    done
-                fi
+                access_container "$SELECTED_SITE" "root"
                 ;;
             4)
-                if [[ ${#sites[@]} -eq 1 ]]; then
-                    manage_frappe_processes_menu "${sites[0]}"
-                else
-                    echo -e "${CYAN}Select a site:${NC}"
-                    select site in "${sites[@]}"; do
-                        if [[ -n "$site" ]]; then
-                            manage_frappe_processes_menu "$site"
-                            break
-                        fi
-                    done
-                fi
+                manage_frappe_processes_menu "$SELECTED_SITE"
                 ;;
             5)
-                if [[ ${#sites[@]} -eq 1 ]]; then
-                    view_logs_menu "${sites[0]}"
-                else
-                    echo -e "${CYAN}Select a site:${NC}"
-                    select site in "${sites[@]}"; do
-                        if [[ -n "$site" ]]; then
-                            view_logs_menu "$site"
-                            break
-                        fi
-                    done
-                fi
+                view_logs_menu "$SELECTED_SITE"
                 ;;
             6)
-                if [[ ${#sites[@]} -eq 1 ]]; then
-                    manage_containers_menu "${sites[0]}"
-                else
-                    echo -e "${CYAN}Select a site:${NC}"
-                    select site in "${sites[@]}"; do
-                        if [[ -n "$site" ]]; then
-                            manage_containers_menu "$site"
-                            break
-                        fi
-                    done
-                fi
+                manage_containers_menu "$SELECTED_SITE"
                 ;;
             7)
                 show_site_info
                 ;;
             8)
-                if [[ ${#sites[@]} -eq 1 ]]; then
-                    access_specific_container_root "${sites[0]}"
-                else
-                    echo -e "${CYAN}Select a site:${NC}"
-                    select site in "${sites[@]}"; do
-                        if [[ -n "$site" ]]; then
-                            access_specific_container_root "$site"
-                            break
-                        fi
-                    done
-                fi
+                access_specific_container_root "$SELECTED_SITE"
                 ;;
             9)
-                if [[ ${#sites[@]} -eq 1 ]]; then
-                    transfer_files "${sites[0]}"
-                else
-                    echo -e "${CYAN}Select a site:${NC}"
-                    select site in "${sites[@]}"; do
-                        if [[ -n "$site" ]]; then
-                            transfer_files "$site"
-                            break
-                        fi
-                    done
-                fi
+                transfer_files "$SELECTED_SITE"
                 ;;
             10)
-                if [[ ${#sites[@]} -eq 1 ]]; then
-                    install_packages "${sites[0]}"
-                else
-                    echo -e "${CYAN}Select a site:${NC}"
-                    select site in "${sites[@]}"; do
-                        if [[ -n "$site" ]]; then
-                            install_packages "$site"
-                            break
-                        fi
-                    done
-                fi
+                install_packages "$SELECTED_SITE"
                 ;;
             11)
+                view_logs "$SELECTED_SITE" "create-site"
+                ;;
+            12)
+                echo -e "${BLUE}🔧 Fix Restart Policies${NC}"
+                echo "This will fix restart policies for all Frappe containers to auto-start after reboot."
+                read -p "Continue? (y/n): " confirm
+                if [[ "$confirm" =~ ^[Yy]$ ]]; then
+                    for site in $(docker ps -a --format "{{.Names}}" | grep -E ".*-(db|redis|app)$" | sed "s/-(db\|redis\|app)$//" | sort -u); do
+                        echo -e "${BLUE}Fixing $site containers...${NC}"
+                        for container in ${site}-db ${site}-redis ${site}-app; do
+                            if docker ps -a --format "{{.Names}}" | grep -q "^${container}$"; then
+                                current_policy=$(docker inspect "$container" --format="{{.HostConfig.RestartPolicy.Name}}" 2>/dev/null || echo "unknown")
+                                if [[ "$current_policy" != "unless-stopped" ]]; then
+                                    echo "  Updating $container restart policy..."
+                                    docker update --restart=unless-stopped "$container"
+                                fi
+                                if [[ "$(docker inspect "$container" --format="{{.State.Status}}")" != "running" ]]; then
+                                    echo "  Starting $container..."
+                                    docker start "$container"
+                                fi
+                            fi
+                        done
+                    done
+                    echo -e "${GREEN}✅ Restart policies fixed! Containers will now start automatically after PC restart.${NC}"
+                else
+                    echo "Operation cancelled."
+                fi
+                ;;
+            13)
                 echo -e "${GREEN}👋 Goodbye!${NC}"
                 exit 0
                 ;;
@@ -805,6 +792,131 @@ manage_frappe_processes_menu() {
     done
 }
 
+# Function to rebuild with custom apps preservation
+rebuild_with_custom_apps() {
+    local site_name=$1
+    local container_name="${site_name}-app"
+    
+    echo -e "${BLUE}📦 Backing up custom apps for ${site_name}...${NC}"
+    
+    # Check if container exists and is running
+    if ! docker ps | grep -q "${container_name}"; then
+        echo -e "${YELLOW}⚠️  Container ${container_name} is not running. Cannot backup custom apps.${NC}"
+        return 1
+    fi
+    
+    # Create backup directory
+    local backup_dir="/tmp/frappe_custom_apps_backup_${site_name}"
+    mkdir -p "$backup_dir"
+    
+    # Extract custom apps (excluding frappe and erpnext)
+    local custom_apps=$(docker exec "${container_name}" bash -c "cd /home/frappe/frappe-bench && cat sites/apps.json | jq -r 'keys[]' | grep -v '^frappe$' | grep -v '^erpnext$'" 2>/dev/null)
+    
+    if [ -n "$custom_apps" ]; then
+        echo "$custom_apps" > "${backup_dir}/custom_apps.txt"
+        echo -e "${GREEN}✅ Custom apps backed up: $(echo "$custom_apps" | tr '\n' ' ')${NC}"
+    else
+        echo -e "${YELLOW}ℹ️  No custom apps found to backup${NC}"
+        rm -rf "$backup_dir"
+        return 0
+    fi
+    
+    # Stop containers
+    echo -e "${BLUE}🛑 Stopping containers...${NC}"
+    DOCKER_COMPOSE_CMD=$(detect_docker_compose)
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}❌ Failed to detect docker compose command${NC}"
+        return 1
+    fi
+    $DOCKER_COMPOSE_CMD -f "${site_name}/${site_name}-docker-compose.yml" down
+    
+    # Update docker-compose file to add restart policy
+    echo -e "${BLUE}📝 Adding auto-restart policy to containers...${NC}"
+    sed -i 's/\(^\s*\)\(container_name:\)/\1restart: always\n\1\2/g' "${site_name}/${site_name}-docker-compose.yml"
+    
+    # Start containers (without regenerating docker-compose)
+    echo -e "${BLUE}🔄 Starting containers...${NC}"
+    $DOCKER_COMPOSE_CMD -f "${site_name}/${site_name}-docker-compose.yml" up -d
+    
+    # Wait for containers to be ready
+    echo -e "${BLUE}⏳ Waiting for containers to be ready...${NC}"
+    local max_attempts=30
+    local attempt=0
+    
+    while [ $attempt -lt $max_attempts ]; do
+        if docker exec "${container_name}" bash -c "cd /home/frappe/frappe-bench && bench --version" >/dev/null 2>&1; then
+            echo -e "${BLUE}🔧 Fix Restart Policies${NC}"
+                echo "This will fix restart policies for all Frappe containers to auto-start after reboot."
+                read -p "Continue? (y/n): " confirm
+                if [[ "$confirm" =~ ^[Yy]$ ]]; then
+                    for site in $(docker ps -a --format "{{.Names}}" | grep -E ".*-(db|redis|app)$" | sed "s/-(db\|redis\|app)$//" | sort -u); do
+                        echo -e "${BLUE}Fixing $site containers...${NC}"
+                        for container in ${site}-db ${site}-redis ${site}-app; do
+                            if docker ps -a --format "{{.Names}}" | grep -q "^${container}$"; then
+                                current_policy=$(docker inspect "$container" --format="{{.HostConfig.RestartPolicy.Name}}" 2>/dev/null || echo "unknown")
+                                if [[ "$current_policy" != "unless-stopped" ]]; then
+                                    echo "  Updating $container restart policy..."
+                                    docker update --restart=unless-stopped "$container"
+                                fi
+                                if [[ "$(docker inspect "$container" --format="{{.State.Status}}")" != "running" ]]; then
+                                    echo "  Starting $container..."
+                                    docker start "$container"
+                                fi
+                            fi
+                        done
+                    done
+                    echo -e "${GREEN}✅ Restart policies fixed! Containers will now start automatically after PC restart.${NC}"
+                else
+                    echo "Operation cancelled."
+                fi
+            break
+        fi
+        echo -e "${YELLOW}   Attempt $((attempt + 1))/$max_attempts - Container not ready yet...${NC}"
+        sleep 10
+        ((attempt++))
+    done
+    
+    if [ $attempt -eq $max_attempts ]; then
+        echo -e "${RED}❌ Container ${container_name} did not become ready in time${NC}"
+        return 1
+    fi
+    
+    echo -e "${GREEN}✅ Container is ready!${NC}"
+    
+    # Reinstall custom apps
+    local custom_apps=$(cat "${backup_dir}/custom_apps.txt")
+    for app in $custom_apps; do
+        echo -e "${BLUE}📦 Reinstalling ${app}...${NC}"
+        
+        # Get app from git repository
+        docker exec "${container_name}" bash -c "cd /home/frappe/frappe-bench && bench get-app ${app}" 2>/dev/null
+        
+        if [ $? -eq 0 ]; then
+            echo -e "${GREEN}✅ ${app} downloaded successfully${NC}"
+            
+            # Install app on the site
+            docker exec "${container_name}" bash -c "cd /home/frappe/frappe-bench && bench --site ${site_name} install-app ${app}" 2>/dev/null
+            
+            if [ $? -eq 0 ]; then
+                echo -e "${GREEN}✅ ${app} installed on site successfully${NC}"
+            else
+                echo -e "${YELLOW}⚠️  ${app} installation on site failed (may already be installed)${NC}"
+            fi
+        else
+            echo -e "${YELLOW}⚠️  ${app} download failed (may already exist)${NC}"
+        fi
+    done
+    
+    # Update apps.txt
+    docker exec "${container_name}" bash -c "cd /home/frappe/frappe-bench && ls -1 apps > sites/apps.txt"
+    echo -e "${GREEN}✅ apps.txt updated with all installed apps${NC}"
+    
+    # Clean up backup
+    rm -rf "$backup_dir"
+    echo -e "${GREEN}✅ Backup cleaned up${NC}"
+    echo -e "${GREEN}🎉 Rebuild with custom apps preservation completed!${NC}"
+}
+
 # Function to handle log viewing menu
 view_logs_menu() {
     local site_name=$1
@@ -812,7 +924,7 @@ view_logs_menu() {
     while true; do
         show_log_menu
         
-        read -p "Select an option (1-7): " choice
+        read -p "Select an option (1-8): " choice
         
         case $choice in
             1)
@@ -834,6 +946,9 @@ view_logs_menu() {
                 view_logs "$site_name" "container"
                 ;;
             7)
+                view_logs "$site_name" "create-site"
+                ;;
+            8)
                 break
                 ;;
             *)
@@ -854,7 +969,7 @@ manage_containers_menu() {
     while true; do
         show_container_menu
         
-        read -p "Select an option (1-10): " choice
+        read -p "Select an option (1-9): " choice
         
         case $choice in
             1)
@@ -870,21 +985,18 @@ manage_containers_menu() {
                 manage_containers "$site_name" "rebuild"
                 ;;
             5)
-                manage_containers "$site_name" "logs"
+                manage_containers "$site_name" "rebuild-with-apps"
                 ;;
             6)
-                manage_containers "$site_name" "status"
+                manage_containers "$site_name" "logs"
                 ;;
             7)
-                remove_all_containers "$site_name"
+                manage_containers "$site_name" "status"
                 ;;
             8)
-                remove_specific_container "$site_name"
+                remove_all_containers "$site_name"
                 ;;
             9)
-                cleanup_docker_space
-                ;;
-            10)
                 break
                 ;;
             *)
